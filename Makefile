@@ -1,18 +1,52 @@
-# Copyright 2018 The Prometheus Authors
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+NAME=smokeping_prober
+BINDIR=/usr/bin
+SYSCONFDIR=/etc
+UNITDIR=/usr/lib/systemd/system
+DESTDIR=
+ROOT_DIR := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
-DOCKER_ARCHS      ?= amd64 armv7 arm64
-DOCKER_REPO       ?= quay.io/superq
-DOCKER_IMAGE_NAME ?= smokeping-prober
+bin/$(NAME): *.go config/*.go
+	cd $(ROOT_DIR) && \
+	GOBIN=$(ROOT_DIR)/bin CGO_ENABLED=1 go install -mod=vendor ./...
 
-include Makefile.common
+.PHONY: clean dist rpm srpm install
+
+$(NAME).service: $(NAME).service.in
+	cd $(ROOT_DIR) && \
+	cat $(NAME).service.in | \
+	sed "s|@NAME@|$(NAME)|" | \
+	sed "s|@UNITDIR@|$(UNITDIR)|" | \
+	sed "s|@BINDIR@|$(BINDIR)|" | \
+	sed "s|@SYSCONFDIR@|$(SYSCONFDIR)|" \
+	> $(NAME).service
+
+clean:
+	cd $(ROOT_DIR) && find -name '*~' -print0 | xargs -0r rm -fv && rm -fr *.tar.gz *.rpm && rm -rf bin && rm -f *.service
+
+dist: clean
+	@which rpmspec || { echo 'rpmspec is not available.  Please install the rpm-build package with the command `dnf install rpm-build` to continue, then rerun this step.' ; exit 1 ; }
+	cd $(ROOT_DIR) || exit $$? ; excludefrom= ; test -f .gitignore && excludefrom=--exclude-from=.gitignore ; DIR=`rpmspec -q --queryformat '%{name}-%{version}\n' *spec | head -1` && FILENAME="$$DIR.tar.gz" && tar cvzf "$$FILENAME" --exclude="$$FILENAME" --exclude=.git --exclude=.gitignore $$excludefrom --transform="s|^|$$DIR/|" --show-transformed *
+
+srpm: dist
+	@which rpmbuild || { echo 'rpmbuild is not available.  Please install the rpm-build package with the command `dnf install rpm-build` to continue, then rerun this step.' ; exit 1 ; }
+	cd $(ROOT_DIR) || exit $$? ; rpmbuild --define "_srcrpmdir ." -ts `rpmspec -q --queryformat '%{name}-%{version}.tar.gz\n' *spec | head -1`
+
+rpm: dist
+	@which rpmbuild || { echo 'rpmbuild is not available.  Please install the rpm-build package with the command `dnf install rpm-build` to continue, then rerun this step.' ; exit 1 ; }
+	cd $(ROOT_DIR) || exit $$? ; rpmbuild --define "_srcrpmdir ." --define "_rpmdir builddir.rpm" -ta `rpmspec -q --queryformat '%{name}-%{version}.tar.gz\n' *spec | head -1`
+	cd $(ROOT_DIR) ; mv -f builddir.rpm/*/* . && rm -rf builddir.rpm
+
+install-$(NAME): bin/$(NAME)
+	install -Dm 755 bin/$(NAME) -t $(DESTDIR)/$(BINDIR)/
+
+install-$(NAME).service: $(NAME).service
+	install -Dm 644 $(NAME).service -t $(DESTDIR)/$(UNITDIR)/
+	echo Now please systemctl --system daemon-reload >&2
+
+install-$(NAME).default:
+	install -Dm 644 $(NAME).default $(DESTDIR)/$(SYSCONFDIR)/default/$(NAME)
+
+install-$(NAME).yml:
+	install -Dm 644 $(NAME).yml $(DESTDIR)/$(SYSCONFDIR)/prometheus/$(NAME).yml
+
+install: install-$(NAME) install-$(NAME).service install-$(NAME).default install-$(NAME).yml

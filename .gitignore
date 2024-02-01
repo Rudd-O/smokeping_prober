@@ -4,3 +4,5 @@ smokeping_prober
 /.release
 /.tarballs
 /vendor
+*.tar.gz
+*.rpm
